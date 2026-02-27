@@ -1,52 +1,39 @@
-from fastapi import FastAPI
 import sqlite3
-import joblib
+import numpy as np
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 
-app = FastAPI()
+def generate_industrial_data(n_points=200):
+    # 1. Création du temps (1 point toutes les minutes)
+    start_time = datetime.now() - timedelta(minutes=n_points)
+    timestamps = [start_time + timedelta(minutes=i) for i in range(n_points)]
+    
+    # 2. Génération de la base normale (Moyenne 25°C, Écart-type 2)
+    # C'est la loi normale : N(25, 2)
+    data = np.random.normal(25, 2, n_points)
+    
+    # 3. Injection d'anomalies (5 points au hasard)
+    anomaly_indices = np.random.choice(range(n_points), size=5, replace=False)
+    for idx in anomaly_indices:
+        data[idx] = np.random.uniform(80, 120) # Pics de chaleur critiques
+        
+    return timestamps, data
 
-# On charge le cerveau de l'IA au démarrage
-try:
-    model = joblib.load("modele_sentinel.pkl")
-    print("🧠 Cerveau chargé avec succès !")
-except:
-    model = None
-    print("⚠️ Attention : Aucun modèle trouvé. Lance train_model.py d'abord.")
-
-@app.get("/test_capteur")
-def test(temperature: float):
-    # 1. Utiliser l'IA pour prédire
-    if model:
-        # L'IA attend un tableau, on lui donne la valeur
-        prediction = model.predict([[temperature]])
-        # Isolation Forest renvoie -1 pour une anomalie et 1 pour du normal
-        statut_ia = "anomaly" if prediction[0] == -1 else "nominal"
-    else:
-        statut_ia = "Modèle non chargé"
-
-    # 2. Enregistrement SQL (comme avant)
+def save_to_db(timestamps, values):
     conn = sqlite3.connect("sentinel.db")
     cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO Telemetry (valeur, statut, timestamp) VALUES (?, ?, ?)",
-        (temperature, statut_ia, datetime.now())
-    )
+    
+    for t, v in zip(timestamps, values):
+        statut = "nominal" if v < 80 else "anomaly"
+        cursor.execute(
+            "INSERT INTO Telemetry (valeur, statut, timestamp) VALUES (?, ?, ?)",
+            (v, statut, t)
+        )
+    
     conn.commit()
     conn.close()
+    print(f"✅ {len(values)} points générés dans sentinel.db")
 
-    return {
-        "valeur": temperature,
-        "prediction_IA": statut_ia,
-        "message": "Anomalie détectée !" if statut_ia == "anomaly" else "Tout est OK"
-    }
-
-@app.get("/historique")
-def get_history():
-    conn = sqlite3.connect("sentinel.db")
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM Telemetry ORDER BY timestamp DESC LIMIT 10")
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+if __name__ == "__main__":
+    t, v = generate_industrial_data()
+    save_to_db(t, v)
